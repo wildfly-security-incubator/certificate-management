@@ -33,7 +33,6 @@ public class HttpRequestSpiImpl implements HttpRequestSpi {
     URI uri;
     Map<String, List<String>> headers = new HashMap<>();
     String body;
-
     HttpRequest httpRequest;
 
 

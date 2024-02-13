@@ -30,6 +30,7 @@ public interface HttpRequestSpi {
     void setHeaders(Map<String, List<String>> headers);
 
     void setHeader(String key, List<String> value);
+
     void setBody(String body);
 
     String getMethod();

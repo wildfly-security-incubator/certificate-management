@@ -47,31 +47,31 @@ public class HttpClientSpiImpl implements HttpClientSpi {
         headers.forEach((headerKey, headerValues) -> headerValues.forEach(value -> builder.header(headerKey, value)));
         HttpRequest builtHttpRequest = builder.build();
         CompletableFuture<HttpResponse<String>> httpResponse = this.httpClient.sendAsync(builtHttpRequest, HttpResponse.BodyHandlers.ofString());
-        return httpResponse.thenApply((stringHttpResponse) -> {
+        return httpResponse.thenApply((httpResponseWithStringBody) -> {
             return new HttpResponseSpi() {
                 @Override
                 public String body() {
-                    return stringHttpResponse.body();
+                    return httpResponseWithStringBody.body();
                 }
 
                 @Override
                 public Map<String, List<String>> getHeaders() {
-                    return stringHttpResponse.headers().map();
+                    return httpResponseWithStringBody.headers().map();
                 }
 
                 @Override
                 public List<String> getHeaderValues(String key) {
-                    return stringHttpResponse.headers().allValues(key);
+                    return httpResponseWithStringBody.headers().allValues(key);
                 }
 
                 @Override
                 public int statusCode() {
-                    return stringHttpResponse.statusCode();
+                    return httpResponseWithStringBody.statusCode();
                 }
 
                 @Override
                 public URI uri() {
-                    return stringHttpResponse.uri();
+                    return httpResponseWithStringBody.uri();
                 }
 
                 @Override

@@ -22,6 +22,4 @@ import java.util.concurrent.Future;
 public interface HttpClientSpi {
 
     Future<HttpResponseSpi> sendAsyncRequest(HttpRequestSpi httpRequest);
-
-
 }
