@@ -204,5 +204,6 @@
         <module>x500/cert/acme</module>
         <module>x500/cert/base</module>
         <module>x500/cert/util</module>
+        <module>x500/cert/spi</module>
     </modules>
 </project>

@@ -111,6 +111,11 @@
             <artifactId>jakarta.json</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.wildfly.security.certificate.management</groupId>
+            <artifactId>spi</artifactId>
+            <version>1.0.0.Alpha1-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
 </project>

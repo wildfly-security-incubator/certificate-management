@@ -23,23 +23,25 @@ import jakarta.json.Json;
 import jakarta.json.JsonObject;
 import jakarta.json.JsonReader;
 import org.wildfly.common.iteration.CodePointIterator;
+import org.wildfly.security.certificate.management.x500.cert.spi.HttpClientSpi;
+import org.wildfly.security.certificate.management.x500.cert.spi.HttpRequestSpi;
+import org.wildfly.security.certificate.management.x500.cert.spi.HttpResponseSpi;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.ServiceLoader;
 
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.ACCEPT_LANGUAGE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.BAD_NONCE;
@@ -60,6 +62,29 @@ public abstract class AsyncAcmeClientSpi {
     private static final long DEFAULT_RETRY_AFTER_MILLI = 3000;
     private static final String USER_AGENT_STRING = "Elytron ACME Client/" + "1.0.0.Alpha1-SNAPSHOT";
     private final AcmeClientSpi delegate;
+
+    HttpClientSpi httpClient;
+
+    HttpClientSpi getHttpClientInstance() {
+        if (httpClient != null) {
+            return httpClient;
+        }
+        Iterator<HttpClientSpi> httpClientIterator = ServiceLoader.load(HttpClientSpi.class).iterator();
+        if (httpClientIterator.hasNext()) {
+            return httpClientIterator.next();
+        } else {
+            return null;
+        }
+    }
+
+    HttpRequestSpi getNewHttpRequest() {
+        Iterator<HttpRequestSpi> httprequestIterator = ServiceLoader.load(HttpRequestSpi.class).iterator();
+        if (httprequestIterator.hasNext()) {
+            return httprequestIterator.next();
+        } else {
+            return null;
+        }
+    }
 
     public AsyncAcmeClientSpi() {
         AsyncAcmeClientSpi impl = this;
@@ -85,7 +110,7 @@ public abstract class AsyncAcmeClientSpi {
         if (account == null) {
             return Uni.createFrom().failure(new IllegalArgumentException("account"));
         }
-        HttpClient httpClient = HttpClient.newHttpClient();
+        HttpClientSpi httpClient = this.getHttpClientInstance();
 
         return getResourceUrl(account, AcmeResource.NEW_NONCE, staging)
                 .chain((URL newNonceUrl) -> {
@@ -95,17 +120,19 @@ public abstract class AsyncAcmeClientSpi {
                     } catch (URISyntaxException e) {
                         throw new RuntimeException(e);
                     }
-                    HttpRequest httpRequest = HttpRequest.newBuilder().method("HEAD", HttpRequest.BodyPublishers.noBody())
-                            .uri(newNonceUri)
-                            .header(ACCEPT_LANGUAGE, Locale.getDefault().toLanguageTag())
-                            .header(USER_AGENT, USER_AGENT_STRING).build();
-                    return Uni.createFrom().future(httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString()));
+
+                    HttpRequestSpi httpRequest = getNewHttpRequest();
+                    httpRequest.setMethod("HEAD");
+                    httpRequest.setURI(newNonceUri);
+                    httpRequest.setHeader(ACCEPT_LANGUAGE, Collections.singletonList(Locale.getDefault().toLanguageTag()));
+                    httpRequest.setHeader(USER_AGENT, Collections.singletonList(USER_AGENT_STRING));
+                    return Uni.createFrom().future(httpClient.sendAsyncRequest(httpRequest));
                 }).onFailure().transform(Throwable::getCause)
                 .map((httpResponse) -> {
                     int responseCode = httpResponse.statusCode();
                     byte[] nonce;
                     try {
-                        if (responseCode != HttpURLConnection.HTTP_NO_CONTENT && responseCode != HttpURLConnection.HTTP_OK) {
+                        if (responseCode != 204 && responseCode != 200) {
                             handleAcmeErrorResponse(httpResponse, responseCode);
                         }
                         nonce = getReplayNonce(httpResponse);
@@ -129,11 +156,8 @@ public abstract class AsyncAcmeClientSpi {
         }).onFailure().transform(Throwable::getCause);
     }
 
-    private static byte[] getReplayNonce(HttpResponse<String> connection) throws AcmeException {
-        String nonce = null;
-        if (connection.headers().firstValue(REPLAY_NONCE).isPresent()) {
-            nonce = connection.headers().firstValue(REPLAY_NONCE).get();
-        }
+    private static byte[] getReplayNonce(HttpResponseSpi httpResponse) throws AcmeException {
+        String nonce = httpResponse.getHeaderValues(REPLAY_NONCE).get(0);
         if (nonce == null) {
             return null;
         }
@@ -147,7 +171,7 @@ public abstract class AsyncAcmeClientSpi {
         final Map<AcmeResource, URL> resourceUrls = new HashMap<>();
 //        final Map<AcmeResource, URL> resourceUrls = account.getResourceUrls(staging);
 
-        Uni<HttpResponse<String>> httpResponseUni = null;
+        Uni<HttpResponseSpi> httpResponseUni;
         // TODO do we want caching?
 //        if (!resourceUrls.isEmpty()) {
 //            return Uni.createFrom().item(resourceUrls);
@@ -156,9 +180,9 @@ public abstract class AsyncAcmeClientSpi {
         if (staging && account.getServerUrl(true) == null) {
             return Uni.createFrom().failure(acme.noAcmeServerStagingUrlGiven());
         }
-        httpResponseUni = sendGetRequest(account.getServerUrl(staging), HttpURLConnection.HTTP_OK, JSON_CONTENT_TYPE);
+        httpResponseUni = sendGetRequest(account.getServerUrl(staging), 200, JSON_CONTENT_TYPE);
 
-        return httpResponseUni.map((HttpResponse<String> httpResponse) -> {
+        return httpResponseUni.map((HttpResponseSpi httpResponse) -> {
             JsonObject directoryJson;
             try {
                 directoryJson = getJsonResponse(httpResponse);
@@ -179,21 +203,24 @@ public abstract class AsyncAcmeClientSpi {
         }).onFailure().transform(Throwable::getCause);
     }
 
-    private Uni<HttpResponse<String>> sendGetRequest(String resourceUrl, int expectedResponseCode, String expectedContentType) {
-        HttpClient httpClient = HttpClient.newBuilder().build();
-        HttpRequest httpRequest;
+    private Uni<HttpResponseSpi> sendGetRequest(String resourceUrl, int expectedResponseCode, String expectedContentType) {
+        HttpClientSpi httpClient = this.getHttpClientInstance();
+        HttpRequestSpi httpRequest;
         try {
-            httpRequest = HttpRequest.newBuilder().GET().uri(new URI(resourceUrl))
-                    .header(ACCEPT_LANGUAGE, Locale.getDefault().toLanguageTag())
-                    .header(USER_AGENT, USER_AGENT_STRING).build();
-            return Uni.createFrom().future(httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString()))
-                    .onItem().call((HttpResponse<String> httpResponse) -> {
+            httpRequest = getNewHttpRequest();
+            httpRequest.setMethod("GET");
+            httpRequest.setURI(new URI(resourceUrl));
+            httpRequest.setHeader(ACCEPT_LANGUAGE, Collections.singletonList(Locale.getDefault().toLanguageTag()));
+            httpRequest.setHeader(USER_AGENT, Collections.singletonList(USER_AGENT_STRING));
+
+            return Uni.createFrom().future(httpClient.sendAsyncRequest(httpRequest))
+                    .chain((HttpResponseSpi httpResponse) -> {
                         try {
                             int responseCode = httpResponse.statusCode();
                             if (responseCode != expectedResponseCode) {
                                 handleAcmeErrorResponse(httpResponse, responseCode);
                             }
-                            String contentType = httpResponse.headers().firstValue("Content-Type").get();
+                            String contentType = httpResponse.getHeaderValues("Content-Type").get(0);
                             if (!AcmeClientSpiUtils.checkContentType(contentType, expectedContentType)) {
                                 return Uni.createFrom().failure(acme.unexpectedContentTypeFromAcmeServer(contentType));
                             }
@@ -207,29 +234,31 @@ public abstract class AsyncAcmeClientSpi {
         }
     }
 
-    private static void handleAcmeErrorResponse(HttpResponse<String> connection, int responseCode) throws AcmeException {
+    private static void handleAcmeErrorResponse(HttpResponseSpi connection, int responseCode) throws AcmeException {
         try {
             String responseMessage = connection.body();
-            if (!AcmeClientSpiUtils.checkContentType(connection.headers().firstValue("Content-Type").get(), PROBLEM_JSON_CONTENT_TYPE)) {
+            if (!AcmeClientSpiUtils.checkContentType(connection.getHeaderValues("Content-Type").get(0), PROBLEM_JSON_CONTENT_TYPE)) {
                 throw acme.unexpectedResponseCodeFromAcmeServer(responseCode, responseMessage);
             }
             JsonObject jsonResponse = getJsonResponse(connection);
             String type = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, TYPE);
             if (type != null) {
-                if (type.equals(BAD_NONCE)) {
-                    return;
-                } else if (type.equals(USER_ACTION_REQUIRED)) {
-                    String instance = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, INSTANCE);
-                    if (instance != null) {
-                        throw acme.userActionRequired(instance);
-                    }
-                } else if (type.equals(RATE_LIMITED)) {
-                    long retryAfter = getRetryAfter(connection, false);
-                    if (retryAfter > 0) {
-                        throw acme.rateLimitExceededTryAgainLater(Instant.ofEpochMilli(retryAfter));
-                    } else {
-                        throw acme.rateLimitExceeded();
-                    }
+                switch (type) {
+                    case BAD_NONCE:
+                        return;
+                    case USER_ACTION_REQUIRED:
+                        String instance = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, INSTANCE);
+                        if (instance != null) {
+                            throw acme.userActionRequired(instance);
+                        }
+                        break;
+                    case RATE_LIMITED:
+                        long retryAfter = getRetryAfter(connection, false);
+                        if (retryAfter > 0) {
+                            throw acme.rateLimitExceededTryAgainLater(Instant.ofEpochMilli(retryAfter));
+                        } else {
+                            throw acme.rateLimitExceeded();
+                        }
                 }
             }
             String problemMessages = AcmeClientSpiUtils.getProblemMessages(jsonResponse);
@@ -247,7 +276,7 @@ public abstract class AsyncAcmeClientSpi {
         }
     }
 
-    private static JsonObject getJsonResponse(HttpResponse<String> connection) throws AcmeException {
+    private static JsonObject getJsonResponse(HttpResponseSpi connection) throws AcmeException {
         JsonObject jsonResponse;
         try (InputStream inputStream = new ByteArrayInputStream(connection.body().getBytes());
              JsonReader jsonReader = Json.createReader(inputStream)) {
@@ -258,14 +287,14 @@ public abstract class AsyncAcmeClientSpi {
         return jsonResponse;
     }
 
-    private static long getRetryAfter(HttpResponse<String> connection, boolean useDefaultIfHeaderNotPresent) {
+    private static long getRetryAfter(HttpResponseSpi connection, boolean useDefaultIfHeaderNotPresent) {
         long retryAfterMilli = -1;
-        String retryAfter = connection.headers().firstValue(RETRY_AFTER).get();
+        String retryAfter = connection.getHeaderValues(RETRY_AFTER).get(0);
         if (retryAfter != null) {
             try {
                 retryAfterMilli = Integer.parseInt(retryAfter) * 1000L;
             } catch (NumberFormatException e) {
-                long retryAfterDate = Long.parseLong(connection.headers().firstValue(RETRY_AFTER).get());
+                long retryAfterDate = Long.parseLong(connection.getHeaderValues(RETRY_AFTER).get(0));
                 if (retryAfterDate != 0) {
                     retryAfterMilli = retryAfterDate - Instant.now().toEpochMilli();
                 }
