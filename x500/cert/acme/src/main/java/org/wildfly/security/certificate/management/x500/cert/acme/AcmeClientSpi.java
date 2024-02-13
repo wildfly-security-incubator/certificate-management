@@ -32,7 +32,6 @@ import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CO
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CONTENT_TYPE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CSR;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DEACTIVATED;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DETAIL;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DNS;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.EXTERNAL_ACCOUNT_REQUIRED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.FINALIZE;
@@ -63,13 +62,11 @@ import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.RE
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.REPLAY_NONCE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.RETRY_AFTER;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.STATUS;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.SUBPROBLEMS;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TERMS_OF_SERVICE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TOKEN;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.URL;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.SIGNATURE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TERMS_OF_SERVICE_AGREED;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TITLE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TYPE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.USER_ACTION_REQUIRED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.USER_AGENT;
@@ -164,9 +161,6 @@ public abstract class AcmeClientSpi {
 
     private static final int MAX_RETRIES = 10;
     private static final long DEFAULT_RETRY_AFTER_MILLI = 3000;
-    private static final int[] CONTENT_TYPE_DELIMS = new int[] {';', '='};
-    private static final String CHARSET = "charset";
-    private static final String UTF_8 = "utf-8";
     private static final String USER_AGENT_STRING = "Elytron ACME Client/" + "1.0.0.Alpha1-SNAPSHOT";
 
     private static final JsonObject EMPTY_PAYLOAD = Json.createObjectBuilder().build();
@@ -191,7 +185,7 @@ public abstract class AcmeClientSpi {
             JsonObject directoryJson = getJsonResponse(connection);
             try {
                 for (AcmeResource resource : AcmeResource.values()) {
-                    String resourceUrl = getOptionalJsonString(directoryJson, resource.getValue());
+                    String resourceUrl = AcmeClientSpiUtils.getOptionalJsonString(directoryJson, resource.getValue());
                     URL url = resourceUrl != null ? new URL(resourceUrl) : null;
                     resourceUrls.put(resource, url);
                 }
@@ -222,11 +216,11 @@ public abstract class AcmeClientSpi {
             return null;
         }
         AcmeMetadata.Builder metadataBuilder = AcmeMetadata.builder();
-        String termsOfServiceUrl = getOptionalJsonString(metadata, TERMS_OF_SERVICE);
+        String termsOfServiceUrl = AcmeClientSpiUtils.getOptionalJsonString(metadata, TERMS_OF_SERVICE);
         if (termsOfServiceUrl != null) {
             metadataBuilder.setTermsOfServiceUrl(termsOfServiceUrl);
         }
-        String websiteUrl = getOptionalJsonString(metadata, WEBSITE);
+        String websiteUrl = AcmeClientSpiUtils.getOptionalJsonString(metadata, WEBSITE);
         if (websiteUrl != null) {
             metadataBuilder.setWebsiteUrl(websiteUrl);
         }
@@ -524,7 +518,7 @@ public abstract class AcmeClientSpi {
             }
 
             // download the certificate chain
-            String certificateUrl = getOptionalJsonString(jsonResponse, CERTIFICATE);
+            String certificateUrl = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, CERTIFICATE);
             if (certificateUrl == null) {
                 throw acme.noCertificateUrlProvidedByAcmeServer();
             }
@@ -736,7 +730,7 @@ public abstract class AcmeClientSpi {
                 handleAcmeErrorResponse(connection, responseCode);
             }
             String contentType = connection.getContentType();
-            if (! checkContentType(connection, expectedContentType)) {
+            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), expectedContentType)) {
                 throw acme.unexpectedContentTypeFromAcmeServer(contentType);
             }
             return connection;
@@ -790,7 +784,7 @@ public abstract class AcmeClientSpi {
                     if (expectedResponseCode == responseCode) {
                         if (expectedContentType != null) {
                             String contentType = connection.getContentType();
-                            if (! checkContentType(connection, expectedContentType)) {
+                            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), expectedContentType)) {
                                 throw acme.unexpectedContentTypeFromAcmeServer(contentType);
                             }
                         }
@@ -882,7 +876,7 @@ public abstract class AcmeClientSpi {
     private static JsonObject getJsonResponse(HttpURLConnection connection) throws AcmeException {
         JsonObject jsonResponse;
         try (InputStream inputStream = new BufferedInputStream(connection.getResponseCode() < 400 ? connection.getInputStream() : connection.getErrorStream());
-                JsonReader jsonReader = Json.createReader(inputStream)) {
+             JsonReader jsonReader = Json.createReader(inputStream)) {
             jsonResponse = jsonReader.readObject();
         } catch (IOException e) {
             throw acme.unableToObtainJsonResponseFromAcmeServer(e);
@@ -931,16 +925,16 @@ public abstract class AcmeClientSpi {
     private static void handleAcmeErrorResponse(HttpURLConnection connection, int responseCode) throws AcmeException {
         try {
             String responseMessage = connection.getResponseMessage();
-            if (! checkContentType(connection, PROBLEM_JSON_CONTENT_TYPE)) {
+            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), PROBLEM_JSON_CONTENT_TYPE)) {
                 throw acme.unexpectedResponseCodeFromAcmeServer(responseCode, responseMessage);
             }
             JsonObject jsonResponse = getJsonResponse(connection);
-            String type = getOptionalJsonString(jsonResponse, TYPE);
+            String type = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, TYPE);
             if (type != null) {
                 if (type.equals(BAD_NONCE)) {
                     return; // the request will be re-attempted
                 } else if (type.equals(USER_ACTION_REQUIRED)) {
-                    String instance = getOptionalJsonString(jsonResponse, INSTANCE);
+                    String instance = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, INSTANCE);
                     if (instance != null) {
                         throw acme.userActionRequired(instance);
                     }
@@ -953,7 +947,7 @@ public abstract class AcmeClientSpi {
                     }
                 }
             }
-            String problemMessages = getProblemMessages(jsonResponse);
+            String problemMessages = AcmeClientSpiUtils.getProblemMessages(jsonResponse);
             if (problemMessages != null && ! problemMessages.isEmpty()) {
                 throw new AcmeException(problemMessages);
             } else {
@@ -966,45 +960,6 @@ public abstract class AcmeClientSpi {
                 throw new AcmeException(e);
             }
         }
-    }
-
-    private static String getProblemMessages(JsonObject errorResponse) {
-        StringBuilder problemMessages = new StringBuilder();
-        String mainProblem = getProblemMessage(errorResponse);
-        if (mainProblem != null) {
-            problemMessages.append(getProblemMessage(errorResponse));
-        }
-        JsonArray subproblems = errorResponse.getJsonArray(SUBPROBLEMS);
-        if (subproblems != null && !subproblems.isEmpty()) {
-            problemMessages.append(":");
-            for (JsonObject subproblem : subproblems.getValuesAs(JsonObject.class)) {
-                problemMessages.append("\n").append(getProblemMessage(subproblem));
-            }
-        }
-        return problemMessages.toString();
-    }
-
-    private static String getProblemMessage(JsonObject jsonResponse) {
-        String type = getOptionalJsonString(jsonResponse, TYPE);
-        String detail = getOptionalJsonString(jsonResponse, DETAIL);
-        String title = getOptionalJsonString(jsonResponse, TITLE);
-        String problemMessage = null;
-        if (detail != null) {
-            problemMessage = detail;
-        } else if (title != null) {
-            problemMessage = title;
-        } else if (type != null) {
-            problemMessage = type;
-        }
-        return problemMessage;
-    }
-
-    private static String getOptionalJsonString(JsonObject jsonObject, String name) {
-        JsonString value = jsonObject.getJsonString(name);
-        if (value == null) {
-            return null;
-        }
-        return value.getString();
     }
 
     private static X509Certificate[] getPemCertificateChain(HttpURLConnection connection) throws AcmeException {
@@ -1133,45 +1088,6 @@ public abstract class AcmeClientSpi {
             }
         }
         return accountUrl;
-    }
-
-    private static boolean checkContentType(HttpURLConnection connection, String expectedMediaType) throws AcmeException {
-        String contentType = connection.getContentType();
-        if (contentType == null) {
-            return false;
-        }
-        CodePointIterator cpi = CodePointIterator.ofString(contentType);
-        CodePointIterator di = cpi.delimitedBy(CONTENT_TYPE_DELIMS);
-        String mediaType = di.drainToString().trim();
-        skipDelims(di, cpi, CONTENT_TYPE_DELIMS);
-        while (di.hasNext()) {
-            String parameter = di.drainToString().trim();
-            skipDelims(di, cpi, CONTENT_TYPE_DELIMS);
-            if (parameter.equalsIgnoreCase(CHARSET)) {
-                String value = di.drainToString().trim();
-                if (! value.equalsIgnoreCase(UTF_8)) {
-                    return false;
-                }
-            }
-        }
-        return mediaType.equalsIgnoreCase(expectedMediaType);
-    }
-
-    private static void skipDelims(CodePointIterator di, CodePointIterator cpi, int...delims) throws AcmeException {
-        while ((! di.hasNext()) && cpi.hasNext()) {
-            if (! isDelim(cpi.next(), delims)) {
-                throw acme.invalidContentTypeFromAcmeServer();
-            }
-        }
-    }
-
-    private static boolean isDelim(int c, int... delims) {
-        for (int delim : delims) {
-            if (delim == c) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static InputStream getConvertedInputStream(InputStream inputStream) throws IOException {
