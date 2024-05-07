@@ -77,6 +77,13 @@
             <version>${version.jakarta.json.jakarta-json-api}</version>
             <scope>provided</scope>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/io.smallrye.reactive/mutiny -->
+        <dependency>
+            <groupId>io.smallrye.reactive</groupId>
+            <artifactId>mutiny</artifactId>
+            <version>${version.io.smallrye.reactive.mutiny}</version>
+        </dependency>
+
 
         <!-- Mock Web Server -->
         <dependency>
@@ -90,19 +97,24 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
+            <groupId>org.jmockit</groupId>
+            <artifactId>jmockit</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.jmockit</groupId>
-            <artifactId>jmockit</artifactId>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.glassfish</groupId>
             <artifactId>jakarta.json</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wildfly.security.certificate.management</groupId>
+            <artifactId>spi</artifactId>
+            <version>1.0.0.Alpha1-SNAPSHOT</version>
         </dependency>
     </dependencies>
 
