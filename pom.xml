@@ -24,6 +24,7 @@
         <version.org.glassfish.jakarta.json>2.0.1</version.org.glassfish.jakarta.json>
         <version.org.mock-server.mockserver-netty>5.4.1</version.org.mock-server.mockserver-netty>
         <version.org.wildfly.checkstyle-config>1.0.8.Final</version.org.wildfly.checkstyle-config>
+        <version.io.smallrye.reactive.mutiny>2.5.1</version.io.smallrye.reactive.mutiny>
         <version.jakarta.json.jakarta-json-api>2.0.0</version.jakarta.json.jakarta-json-api>
         <version.jmockit>1.39</version.jmockit>
         <version.junit.junit>4.13.1</version.junit.junit>
@@ -159,6 +160,12 @@
                 <scope>test</scope>
             </dependency>
             <dependency>
+                <groupId>org.jmockit</groupId>
+                <artifactId>jmockit</artifactId>
+                <version>${version.jmockit}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
                 <groupId>junit</groupId>
                 <artifactId>junit</artifactId>
                 <version>${version.junit.junit}</version>
@@ -183,12 +190,6 @@
                 <scope>provided</scope>
             </dependency>
             <dependency>
-                <groupId>org.jmockit</groupId>
-                <artifactId>jmockit</artifactId>
-                <version>${version.jmockit}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
                 <groupId>org.glassfish</groupId>
                 <artifactId>jakarta.json</artifactId>
                 <version>${version.org.glassfish.jakarta.json}</version>
@@ -203,5 +204,6 @@
         <module>x500/cert/acme</module>
         <module>x500/cert/base</module>
         <module>x500/cert/util</module>
+        <module>x500/cert/spi</module>
     </modules>
 </project>

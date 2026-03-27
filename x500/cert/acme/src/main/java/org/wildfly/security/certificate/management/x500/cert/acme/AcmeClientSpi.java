@@ -32,7 +32,6 @@ import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CO
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CONTENT_TYPE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.CSR;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DEACTIVATED;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DETAIL;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.DNS;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.EXTERNAL_ACCOUNT_REQUIRED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.FINALIZE;
@@ -52,24 +51,19 @@ import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.NO
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.OLD_KEY;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.ONLY_RETURN_EXISTING;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.ORDER;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.PAYLOAD;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.PEM_CERTIFICATE_CHAIN_CONTENT_TYPE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.PENDING;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.POST;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.PROBLEM_JSON_CONTENT_TYPE;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.PROTECTED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.RATE_LIMITED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.REASON;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.REPLAY_NONCE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.RETRY_AFTER;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.STATUS;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.SUBPROBLEMS;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TERMS_OF_SERVICE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TOKEN;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.URL;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.SIGNATURE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TERMS_OF_SERVICE_AGREED;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TITLE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.TYPE;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.USER_ACTION_REQUIRED;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.USER_AGENT;
@@ -79,6 +73,11 @@ import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.WE
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.base64UrlEncode;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.getAlgHeaderFromSignatureAlgorithm;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.getJwk;
+import static org.wildfly.security.certificate.management.x500.cert.acme.AcmeClientSpiUtils.EMPTY_PAYLOAD;
+import static org.wildfly.security.certificate.management.x500.cert.acme.AcmeClientSpiUtils.MAX_RETRIES;
+import static org.wildfly.security.certificate.management.x500.cert.acme.AcmeClientSpiUtils.getEncodedJson;
+import static org.wildfly.security.certificate.management.x500.cert.acme.AcmeClientSpiUtils.getJws;
+import static org.wildfly.security.certificate.management.x500.cert.acme.AcmeClientSpiUtils.getSanitizedDomainName;
 import static org.wildfly.security.certificate.management.x500.cert.acme.CertMgmtMessages.acme;
 import static org.wildfly.security.certificate.management.x500.cert.util.KeyUtil.getDefaultCompatibleSignatureAlgorithmName;
 
@@ -91,30 +90,20 @@ import jakarta.json.JsonReader;
 import jakarta.json.JsonString;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.IDN;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
-import java.security.PublicKey;
-import java.security.Signature;
-import java.security.SignatureException;
 import java.security.cert.CRLReason;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.interfaces.ECPrivateKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -128,7 +117,6 @@ import javax.security.auth.x500.X500Principal;
 import org.wildfly.common.Assert;
 import org.wildfly.common.iteration.CodePointIterator;
 import org.wildfly.security.certificate.management.asn1.ASN1Encodable;
-import org.wildfly.security.certificate.management.asn1.DERDecoder;
 import org.wildfly.security.certificate.management.x500.GeneralName;
 import org.wildfly.security.certificate.management.x500.X500;
 import org.wildfly.security.certificate.management.x500.X500AttributeTypeAndValue;
@@ -162,14 +150,9 @@ public abstract class AcmeClientSpi {
      */
     public static final String DEFAULT_KEY_ALGORITHM_NAME = "RSA";
 
-    private static final int MAX_RETRIES = 10;
     private static final long DEFAULT_RETRY_AFTER_MILLI = 3000;
-    private static final int[] CONTENT_TYPE_DELIMS = new int[] {';', '='};
-    private static final String CHARSET = "charset";
-    private static final String UTF_8 = "utf-8";
     private static final String USER_AGENT_STRING = "Elytron ACME Client/" + "1.0.0.Alpha1-SNAPSHOT";
 
-    private static final JsonObject EMPTY_PAYLOAD = Json.createObjectBuilder().build();
     private static final String EMPTY_STRING = "";
 
     /**
@@ -191,7 +174,7 @@ public abstract class AcmeClientSpi {
             JsonObject directoryJson = getJsonResponse(connection);
             try {
                 for (AcmeResource resource : AcmeResource.values()) {
-                    String resourceUrl = getOptionalJsonString(directoryJson, resource.getValue());
+                    String resourceUrl = AcmeClientSpiUtils.getOptionalJsonString(directoryJson, resource.getValue());
                     URL url = resourceUrl != null ? new URL(resourceUrl) : null;
                     resourceUrls.put(resource, url);
                 }
@@ -222,11 +205,11 @@ public abstract class AcmeClientSpi {
             return null;
         }
         AcmeMetadata.Builder metadataBuilder = AcmeMetadata.builder();
-        String termsOfServiceUrl = getOptionalJsonString(metadata, TERMS_OF_SERVICE);
+        String termsOfServiceUrl = AcmeClientSpiUtils.getOptionalJsonString(metadata, TERMS_OF_SERVICE);
         if (termsOfServiceUrl != null) {
             metadataBuilder.setTermsOfServiceUrl(termsOfServiceUrl);
         }
-        String websiteUrl = getOptionalJsonString(metadata, WEBSITE);
+        String websiteUrl = AcmeClientSpiUtils.getOptionalJsonString(metadata, WEBSITE);
         if (websiteUrl != null) {
             metadataBuilder.setWebsiteUrl(websiteUrl);
         }
@@ -383,12 +366,12 @@ public abstract class AcmeClientSpi {
         final String keyChangeUrl = getResourceUrl(account, AcmeResource.KEY_CHANGE, staging).toString();
         final String signatureAlgorithm = getDefaultCompatibleSignatureAlgorithmName(privateKey);
         final String algHeader = getAlgHeaderFromSignatureAlgorithm(signatureAlgorithm);
-        final String innerEncodedProtectedHeader = getEncodedProtectedHeader(algHeader, certificate.getPublicKey(), keyChangeUrl);
+        final String innerEncodedProtectedHeader = AcmeClientSpiUtils.getEncodedProtectedHeader(algHeader, certificate.getPublicKey(), keyChangeUrl);
         JsonObjectBuilder innerPayloadBuilder = Json.createObjectBuilder()
                 .add(ACCOUNT, getAccountUrl(account, staging))
                 .add(OLD_KEY, getJwk(account.getPublicKey(), account.getAlgHeader()));
         final String innerEncodedPayload = getEncodedJson(innerPayloadBuilder.build());
-        final String innerEncodedSignature = getEncodedSignature(privateKey, signatureAlgorithm, innerEncodedProtectedHeader, innerEncodedPayload);
+        final String innerEncodedSignature = AcmeClientSpiUtils.getEncodedSignature(privateKey, signatureAlgorithm, innerEncodedProtectedHeader, innerEncodedPayload);
         final String outerEncodedPayload = getEncodedJson(getJws(innerEncodedProtectedHeader, innerEncodedPayload, innerEncodedSignature));
 
         sendPostRequestWithRetries(account, staging, keyChangeUrl, false, outerEncodedPayload, HttpURLConnection.HTTP_OK);
@@ -439,7 +422,7 @@ public abstract class AcmeClientSpi {
                                                                     String... domainNames) throws AcmeException {
         Assert.checkNotNullParam("account", account);
         Assert.checkNotNullParam("domainNames", domainNames);
-        final LinkedHashSet<String> domainNamesSet = getDomainNames(domainNames);
+        final LinkedHashSet<String> domainNamesSet = AcmeClientSpiUtils.getDomainNames(domainNames);
 
         // create a new order
         final String newOrderUrl = getResourceUrl(account, AcmeResource.NEW_ORDER, staging).toString();
@@ -524,7 +507,7 @@ public abstract class AcmeClientSpi {
             }
 
             // download the certificate chain
-            String certificateUrl = getOptionalJsonString(jsonResponse, CERTIFICATE);
+            String certificateUrl = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, CERTIFICATE);
             if (certificateUrl == null) {
                 throw acme.noCertificateUrlProvidedByAcmeServer();
             }
@@ -736,7 +719,7 @@ public abstract class AcmeClientSpi {
                 handleAcmeErrorResponse(connection, responseCode);
             }
             String contentType = connection.getContentType();
-            if (! checkContentType(connection, expectedContentType)) {
+            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), expectedContentType)) {
                 throw acme.unexpectedContentTypeFromAcmeServer(contentType);
             }
             return connection;
@@ -769,7 +752,7 @@ public abstract class AcmeClientSpi {
             HttpURLConnection connection;
             for (int i = 0; i < MAX_RETRIES; i++) {
                 String encodedProtectedHeader = getEncodedProtectedHeader(useJwk, resourceUrl, account, staging);
-                String encodedSignature = getEncodedSignature(account.getPrivateKey(), account.getSignature(), encodedProtectedHeader, encodedPayload);
+                String encodedSignature = AcmeClientSpiUtils.getEncodedSignature(account.getPrivateKey(), account.getSignature(), encodedProtectedHeader, encodedPayload);
                 JsonObject jws = getJws(encodedProtectedHeader, encodedPayload, encodedSignature);
                 connection = (HttpURLConnection) url.openConnection();
                 connection.setRequestMethod(POST);
@@ -790,7 +773,7 @@ public abstract class AcmeClientSpi {
                     if (expectedResponseCode == responseCode) {
                         if (expectedContentType != null) {
                             String contentType = connection.getContentType();
-                            if (! checkContentType(connection, expectedContentType)) {
+                            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), expectedContentType)) {
                                 throw acme.unexpectedContentTypeFromAcmeServer(contentType);
                             }
                         }
@@ -858,31 +841,12 @@ public abstract class AcmeClientSpi {
         return null;
     }
 
-    private static LinkedHashSet<String> getDomainNames(String[] domainNames) throws AcmeException {
-        if (domainNames.length == 0) {
-            throw acme.domainNamesIsEmpty();
-        }
-        final LinkedHashSet<String> domainNamesSet = new LinkedHashSet<>();
-        for (String domainName : domainNames) {
-            domainNamesSet.add(getSanitizedDomainName(domainName));
-        }
-        return domainNamesSet;
-    }
-
-    private static String getSanitizedDomainName(String domainName) throws AcmeException {
-        if (domainName == null) {
-            throw acme.domainNameIsNull();
-        }
-        domainName = IDN.toASCII(domainName.trim());
-        return domainName.toLowerCase(Locale.ROOT);
-    }
-
     /* -- Methods used to parse responses from the ACME server -- */
 
     private static JsonObject getJsonResponse(HttpURLConnection connection) throws AcmeException {
         JsonObject jsonResponse;
         try (InputStream inputStream = new BufferedInputStream(connection.getResponseCode() < 400 ? connection.getInputStream() : connection.getErrorStream());
-                JsonReader jsonReader = Json.createReader(inputStream)) {
+             JsonReader jsonReader = Json.createReader(inputStream)) {
             jsonResponse = jsonReader.readObject();
         } catch (IOException e) {
             throw acme.unableToObtainJsonResponseFromAcmeServer(e);
@@ -931,16 +895,16 @@ public abstract class AcmeClientSpi {
     private static void handleAcmeErrorResponse(HttpURLConnection connection, int responseCode) throws AcmeException {
         try {
             String responseMessage = connection.getResponseMessage();
-            if (! checkContentType(connection, PROBLEM_JSON_CONTENT_TYPE)) {
+            if (! AcmeClientSpiUtils.checkContentType(connection.getContentType(), PROBLEM_JSON_CONTENT_TYPE)) {
                 throw acme.unexpectedResponseCodeFromAcmeServer(responseCode, responseMessage);
             }
             JsonObject jsonResponse = getJsonResponse(connection);
-            String type = getOptionalJsonString(jsonResponse, TYPE);
+            String type = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, TYPE);
             if (type != null) {
                 if (type.equals(BAD_NONCE)) {
                     return; // the request will be re-attempted
                 } else if (type.equals(USER_ACTION_REQUIRED)) {
-                    String instance = getOptionalJsonString(jsonResponse, INSTANCE);
+                    String instance = AcmeClientSpiUtils.getOptionalJsonString(jsonResponse, INSTANCE);
                     if (instance != null) {
                         throw acme.userActionRequired(instance);
                     }
@@ -953,7 +917,7 @@ public abstract class AcmeClientSpi {
                     }
                 }
             }
-            String problemMessages = getProblemMessages(jsonResponse);
+            String problemMessages = AcmeClientSpiUtils.getProblemMessages(jsonResponse);
             if (problemMessages != null && ! problemMessages.isEmpty()) {
                 throw new AcmeException(problemMessages);
             } else {
@@ -968,50 +932,11 @@ public abstract class AcmeClientSpi {
         }
     }
 
-    private static String getProblemMessages(JsonObject errorResponse) {
-        StringBuilder problemMessages = new StringBuilder();
-        String mainProblem = getProblemMessage(errorResponse);
-        if (mainProblem != null) {
-            problemMessages.append(getProblemMessage(errorResponse));
-        }
-        JsonArray subproblems = errorResponse.getJsonArray(SUBPROBLEMS);
-        if (subproblems != null && !subproblems.isEmpty()) {
-            problemMessages.append(":");
-            for (JsonObject subproblem : subproblems.getValuesAs(JsonObject.class)) {
-                problemMessages.append("\n").append(getProblemMessage(subproblem));
-            }
-        }
-        return problemMessages.toString();
-    }
-
-    private static String getProblemMessage(JsonObject jsonResponse) {
-        String type = getOptionalJsonString(jsonResponse, TYPE);
-        String detail = getOptionalJsonString(jsonResponse, DETAIL);
-        String title = getOptionalJsonString(jsonResponse, TITLE);
-        String problemMessage = null;
-        if (detail != null) {
-            problemMessage = detail;
-        } else if (title != null) {
-            problemMessage = title;
-        } else if (type != null) {
-            problemMessage = type;
-        }
-        return problemMessage;
-    }
-
-    private static String getOptionalJsonString(JsonObject jsonObject, String name) {
-        JsonString value = jsonObject.getJsonString(name);
-        if (value == null) {
-            return null;
-        }
-        return value.getString();
-    }
-
     private static X509Certificate[] getPemCertificateChain(HttpURLConnection connection) throws AcmeException {
         try {
             CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
             Collection<? extends Certificate> reply;
-            try (InputStream inputStream = new BufferedInputStream(getConvertedInputStream(connection.getInputStream()))) {
+            try (InputStream inputStream = new BufferedInputStream(AcmeClientSpiUtils.getConvertedInputStream(connection.getInputStream()))) {
                 reply = certificateFactory.generateCertificates(inputStream);
             }
             return X500.asX509CertificateArray(reply.toArray(new Certificate[reply.size()]));
@@ -1022,26 +947,10 @@ public abstract class AcmeClientSpi {
 
     /* -- Methods used to encode JWS messages to send to the ACME server -- */
 
-    private static String getEncodedJson(JsonObject jsonObject) {
-        return CodePointIterator.ofString(jsonObject.toString()).asUtf8().base64Encode(BASE64_URL, false).drainToString();
-    }
 
-    private static JsonObject getJws(String encodedProtectedHeader, String encodedPayload, String encodedSignature) {
-        return Json.createObjectBuilder()
-                .add(PROTECTED, encodedProtectedHeader)
-                .add(PAYLOAD, encodedPayload)
-                .add(SIGNATURE, encodedSignature)
-                .build();
-    }
 
-    private static String getEncodedProtectedHeader(String algHeader, PublicKey publicKey, String resourceUrl) {
-        JsonObject protectedHeader = Json.createObjectBuilder()
-                .add(ALG, algHeader)
-                .add(JWK, getJwk(publicKey, algHeader))
-                .add(URL, resourceUrl)
-                .build();
-        return getEncodedJson(protectedHeader);
-    }
+
+
 
     private String getEncodedProtectedHeader(boolean useJwk, String resourceUrl, AcmeAccount account, boolean staging) throws AcmeException {
         JsonObjectBuilder protectedHeaderBuilder = Json.createObjectBuilder().add(ALG, account.getAlgHeader());
@@ -1056,64 +965,10 @@ public abstract class AcmeClientSpi {
         return getEncodedJson(protectedHeaderBuilder.build());
     }
 
-    private static String getEncodedSignature(PrivateKey privateKey, Signature signature, String encodedProtectedHeader, String encodedPayload) throws AcmeException {
-        final byte[] signatureBytes;
-        try {
-            signature.update((encodedProtectedHeader + "." + encodedPayload).getBytes(StandardCharsets.UTF_8));
-            signatureBytes = signature.sign();
-            if (privateKey instanceof ECPrivateKey) {
-                // need to convert the DER encoded signature to concatenated bytes
-                DERDecoder derDecoder = new DERDecoder(signatureBytes);
-                derDecoder.startSequence();
-                byte[] r = derDecoder.drainElementValue();
-                byte[] s = derDecoder.drainElementValue();
-                derDecoder.endSequence();
-                int rLength = r.length;
-                int sLength = s.length;
-                int rActual = rLength;
-                int sActual = sLength;
-                while (rActual > 0 && r[rLength - rActual] == 0) {
-                    rActual--;
-                }
-                while (sActual > 0 && s[sLength - sActual] == 0) {
-                    sActual--;
-                }
-                int rawLength = Math.max(rActual, sActual);
-                int signatureByteLength = getECSignatureByteLength(signature.getAlgorithm());
-                rawLength = Math.max(rawLength, signatureByteLength / 2);
-                byte[] concatenatedSignatureBytes = new byte[rawLength * 2];
-                System.arraycopy(r, rLength - rActual, concatenatedSignatureBytes, rawLength - rActual, rActual);
-                System.arraycopy(s, sLength - sActual, concatenatedSignatureBytes, 2 * rawLength - sActual, sActual);
-                return base64UrlEncode(concatenatedSignatureBytes);
-            }
-            return base64UrlEncode(signatureBytes);
-        } catch (SignatureException e) {
-            throw acme.unableToCreateAcmeSignature(e);
-        }
-    }
 
-    private static String getEncodedSignature(PrivateKey privateKey, String signatureAlgorithm, String encodedProtectedHeader, String encodedPayload) throws AcmeException {
-        try {
-            Signature signature = Signature.getInstance(signatureAlgorithm);
-            signature.initSign(privateKey);
-            return getEncodedSignature(privateKey, signature, encodedProtectedHeader, encodedPayload);
-        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
-            throw acme.unableToCreateAcmeSignature(e);
-        }
-    }
 
-    private static int getECSignatureByteLength(String signatureAlgorithm) throws AcmeException {
-        switch(signatureAlgorithm) {
-            case "SHA256withECDSA":
-                return 64;
-            case "SHA384withECDSA":
-                return 96;
-            case "SHA512withECDSA":
-                return 132;
-            default:
-                throw acme.unsupportedAcmeAccountSignatureAlgorithm(signatureAlgorithm);
-        }
-    }
+
+
 
     private byte[] getNonce(AcmeAccount account, boolean staging) throws AcmeException {
         byte[] nonce = account.getNonce();
@@ -1129,62 +984,10 @@ public abstract class AcmeClientSpi {
             createAccount(account, staging, true);
             accountUrl = account.getAccountUrl();
             if (accountUrl == null) {
-                acme.acmeAccountDoesNotExist();
+                throw acme.acmeAccountDoesNotExist();
             }
         }
         return accountUrl;
     }
 
-    private static boolean checkContentType(HttpURLConnection connection, String expectedMediaType) throws AcmeException {
-        String contentType = connection.getContentType();
-        if (contentType == null) {
-            return false;
-        }
-        CodePointIterator cpi = CodePointIterator.ofString(contentType);
-        CodePointIterator di = cpi.delimitedBy(CONTENT_TYPE_DELIMS);
-        String mediaType = di.drainToString().trim();
-        skipDelims(di, cpi, CONTENT_TYPE_DELIMS);
-        while (di.hasNext()) {
-            String parameter = di.drainToString().trim();
-            skipDelims(di, cpi, CONTENT_TYPE_DELIMS);
-            if (parameter.equalsIgnoreCase(CHARSET)) {
-                String value = di.drainToString().trim();
-                if (! value.equalsIgnoreCase(UTF_8)) {
-                    return false;
-                }
-            }
-        }
-        return mediaType.equalsIgnoreCase(expectedMediaType);
-    }
-
-    private static void skipDelims(CodePointIterator di, CodePointIterator cpi, int...delims) throws AcmeException {
-        while ((! di.hasNext()) && cpi.hasNext()) {
-            if (! isDelim(cpi.next(), delims)) {
-                throw acme.invalidContentTypeFromAcmeServer();
-            }
-        }
-    }
-
-    private static boolean isDelim(int c, int... delims) {
-        for (int delim : delims) {
-            if (delim == c) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static InputStream getConvertedInputStream(InputStream inputStream) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-            String currentLine;
-            while ((currentLine = reader.readLine()) != null) {
-                // ignore any blank lines to avoid parsing issues on IBM JDK
-                if (! currentLine.trim().isEmpty()) {
-                    sb.append(currentLine + System.lineSeparator());
-                }
-            }
-        }
-        return new ByteArrayInputStream(sb.toString().getBytes(StandardCharsets.UTF_8));
-    }
 }

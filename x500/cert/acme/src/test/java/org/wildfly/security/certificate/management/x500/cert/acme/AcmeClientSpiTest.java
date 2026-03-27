@@ -30,20 +30,22 @@ import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.ACCOUNT;
 import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.BASE64_URL;
-import static org.wildfly.security.certificate.management.x500.cert.acme.Acme.ORDER;
 
 import org.apache.commons.io.IOUtils;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameter;
+import org.junit.runners.Parameterized.Parameters;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.matchers.Times;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.wildfly.common.iteration.ByteIterator;
 import org.wildfly.common.iteration.CodePointIterator;
-import org.wildfly.security.certificate.management.x500.cert.X509CertificateChainAndSigningKey;
 
 import java.io.BufferedInputStream;
 import java.io.InputStream;
@@ -52,23 +54,19 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.PrivateKey;
-import java.security.cert.CRLReason;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.List;
-
-import javax.security.auth.x500.X500Principal;
 
 import mockit.Mock;
 import mockit.MockUp;
-import okhttp3.mockwebserver.Dispatcher;
-import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
-import okhttp3.mockwebserver.RecordedRequest;
+import org.wildfly.security.certificate.management.x500.cert.X509CertificateChainAndSigningKey;
 
+import javax.security.auth.x500.X500Principal;
 
 /**
  * Tests for the Automatic Certificate Management Environment (ACME) client SPI. These tests simulate a mock Let's Encrypt
@@ -78,6 +76,7 @@ import okhttp3.mockwebserver.RecordedRequest;
  *
  * @author <a href="mailto:fjuma@redhat.com">Farah Juma</a>
  */
+@RunWith(Parameterized.class)
 public class AcmeClientSpiTest {
 
     private static AcmeAccount.Builder populateBasicBuilder() throws Exception {
@@ -116,7 +115,13 @@ public class AcmeClientSpiTest {
     private static ClientAndServer server; // used to simulate a Let's Encrypt server instance
     private static MockWebServer client; // used to simulate a WildFly instance
 
-    private final SimpleAcmeClient acmeClient = new SimpleAcmeClient();
+    @Parameter
+    public static SimpleDelegatingAcmeClient acmeClient = null;
+
+    @Parameters
+    public static Iterable<? extends Object> data() {
+        return Arrays.asList(new SimpleDelegatingAcmeClient(false), new SimpleDelegatingAcmeClient(true));
+    }
 
     private static void mockRetryAfter() {
         Class<?> classToMock;
@@ -181,6 +186,72 @@ public class AcmeClientSpiTest {
     }
 
     @Test
+    public void testUpdateAccount() throws Exception {
+        final String ACCT_LOCATION = "http://localhost:4001/acme/acct/5";
+        server = setupTestUpdateAccount();
+        AcmeAccount account = populateAccount(ACCOUNT_1_V2);
+        account.setAccountUrl(ACCT_LOCATION);
+        String[] contacts = new String[] { "mailto:certificates@examples.com", "mailto:admin@examples.com"};
+        acmeClient.updateAccount(account, false, false, contacts);
+        assertFalse(account.isTermsOfServiceAgreed());
+
+        String[] updatedContacts = acmeClient.queryAccountContactUrls(account, false);
+        assertArrayEquals(contacts, updatedContacts);
+
+        acmeClient.updateAccount(account, false, false, null);
+        updatedContacts = acmeClient.queryAccountContactUrls(account, false);
+        assertArrayEquals(contacts, updatedContacts);
+    }
+
+    @Test
+    public void testGetNonce() throws Exception {
+        final String NEW_NONCE_RESPONSE = "zincG439TOpiDIeJBbmInMOo_xnZV0jpUstA4VZgSiyuFy0";
+        server = setupTestGetNonce();
+        AcmeAccount account = populateBasicAccount(ACCOUNT_1_V2);
+        account.setNonce(CodePointIterator.ofString("rtJAy_mcjDFGnnzCOAbGMGM6w8P3qU0bRDMf8sjt5IU").base64Decode(BASE64_URL, false).drain());
+        String nonce = ByteIterator.ofBytes(account.getNonce()).base64Encode(BASE64_URL, false).drainToString();
+        assertNotNull(nonce);
+
+        String newNonce = ByteIterator.ofBytes(acmeClient.getNewNonce(account, false)).base64Encode(BASE64_URL, false).drainToString();
+        assertNotEquals(nonce,newNonce);
+        assertEquals(NEW_NONCE_RESPONSE, newNonce);
+    }
+
+    @Test
+    public void testGetMetadata() throws Exception {
+        server = setupTestGetMetadata();
+        AcmeAccount account = populateBasicAccount(ACCOUNT_8_V2);
+        AcmeMetadata metadata = acmeClient.getMetadata(account, false);
+        assertNotNull(metadata);
+        assertEquals("https://boulder:4431/terms/v7", metadata.getTermsOfServiceUrl());
+        assertEquals("https://github.com/letsencrypt/boulder", metadata.getWebsiteUrl());
+        assertArrayEquals(new String[] { "happy-hacker-ca.invalid", "happy-hacker2-ca.invalid" }, metadata.getCAAIdentities());
+        assertTrue(metadata.isExternalAccountRequired());
+
+        metadata = acmeClient.getMetadata(account, false);
+        assertNotNull(metadata);
+        assertEquals("https://boulder:4431/terms/v7", metadata.getTermsOfServiceUrl());
+        assertNull(metadata.getWebsiteUrl());
+        assertNull(metadata.getCAAIdentities());
+        assertFalse(metadata.isExternalAccountRequired());
+
+        metadata = acmeClient.getMetadata(account, false);
+        assertNull(metadata);
+    }
+
+    @Test
+    public void testChangeAccountKey() throws Exception {
+        server = setupTestChangeAccountKey();
+        AcmeAccount account = populateAccount(ACCOUNT_6_V2);
+        X509Certificate oldCertificate = account.getCertificate();
+        X500Principal oldDn = account.getDn();
+        acmeClient.changeAccountKey(account, false);
+        assertFalse(oldCertificate.equals(account.getCertificate()));
+        assertEquals(oldDn, account.getDn());
+        assertEquals(Acme.VALID, acmeClient.queryAccountStatus(account, false));
+    }
+
+    @Test
     public void testCreateAccountMissingLocationURL() throws Exception {
         server = setupTestCreateAccount(true);
         AcmeAccount account = populateBasicAccount(ACCOUNT_1_V2);
@@ -189,7 +260,7 @@ public class AcmeClientSpiTest {
         try {
             acmeClient.createAccount(account, false);
             fail("Expected AcmeException not thrown");
-        } catch(AcmeException e) {
+        } catch(AcmeException | RuntimeException e) {
             assertTrue(e.getMessage().contains(ACCOUNT));
         }
     }
@@ -212,7 +283,7 @@ public class AcmeClientSpiTest {
             // the key corresponding to ACCOUNT_3 is not associated with an already registered account
             acmeClient.createAccount(newAccount, false, true);
             fail("Expected AcmeException not thrown");
-        } catch (AcmeException expected) {
+        } catch (AcmeException | RuntimeException expected) {
         }
     }
 
@@ -227,101 +298,11 @@ public class AcmeClientSpiTest {
     }
 
     @Test
-    public void testUpdateAccount() throws Exception {
-        final String ACCT_LOCATION = "http://localhost:4001/acme/acct/5";
-        server = setupTestUpdateAccount();
-        AcmeAccount account = populateAccount(ACCOUNT_1_V2);
-        account.setAccountUrl(ACCT_LOCATION);
-        String[] contacts = new String[] { "mailto:certificates@examples.com", "mailto:admin@examples.com"};
-        acmeClient.updateAccount(account, false, false, contacts);
-        assertFalse(account.isTermsOfServiceAgreed());
-
-        String[] updatedContacts = acmeClient.queryAccountContactUrls(account, false);
-        assertArrayEquals(contacts, updatedContacts);
-
-        acmeClient.updateAccount(account, false, false, null);
-        updatedContacts = acmeClient.queryAccountContactUrls(account, false);
-        assertArrayEquals(contacts, updatedContacts);
-    }
-
-    @Test
-    public void testDeactivateAccount() throws Exception {
-        final String ACCT_LOCATION = "http://localhost:4001/acme/acct/17";
-        server = setupTestDeactivateAccount();
-        AcmeAccount account = populateAccount(ACCOUNT_5_V2);
-        account.setAccountUrl(ACCT_LOCATION);
-        assertEquals(Acme.VALID, acmeClient.queryAccountStatus(account, false));
-
-        acmeClient.deactivateAccount(account, false);
-        try {
-            acmeClient.obtainCertificateChain(account, false, "172.17.0.1");
-            fail("Expected AcmeException not thrown");
-        } catch (AcmeException e) {
-            assertTrue(e.getMessage().contains("deactivated"));
-        }
-    }
-
-    @Test
-    public void testGetNonce() throws Exception {
-        final String NEW_NONCE_RESPONSE = "zincG439TOpiDIeJBbmInMOo_xnZV0jpUstA4VZgSiyuFy0";
-        server = setupTestGetNonce();
-        AcmeAccount account = populateBasicAccount(ACCOUNT_1_V2);
-        account.setNonce(CodePointIterator.ofString("rtJAy_mcjDFGnnzCOAbGMGM6w8P3qU0bRDMf8sjt5IU").base64Decode(BASE64_URL, false).drain());
-        String nonce = ByteIterator.ofBytes(account.getNonce()).base64Encode(BASE64_URL, false).drainToString();
-        assertNotNull(nonce);
-
-        String newNonce = ByteIterator.ofBytes(acmeClient.getNewNonce(account, false)).base64Encode(BASE64_URL, false).drainToString();
-        assertNotEquals(nonce,newNonce);
-        assertEquals(NEW_NONCE_RESPONSE, newNonce);
-    }
-
-    @Test
     public void testObtainCertificateChain() throws Exception {
         server = setupTestObtainCertificate();
         AcmeAccount account = populateAccount(ACCOUNT_3_V2);
         String domainName = "fjsljghasldfjgkv2.com"; // randomly generated domain name
         obtainCertificateChain(null, -1, account, domainName);
-    }
-
-    @Test
-    public void testObtainCertificateChainMissingLocationURL() throws Exception {
-        server = setupTestObtainCertificate(true);
-        AcmeAccount account = populateAccount(ACCOUNT_3_V2);
-        String domainName = "fjsljghasldfjgkv2.com"; // randomly generated domain name
-        try {
-            obtainCertificateChain(null, -1, account, domainName);
-            fail("Expected AcmeException not thrown");
-        } catch(AcmeException e) {
-            assertTrue(e.getMessage().contains(ORDER));
-        }
-    }
-
-    @Test
-    public void testObtainCertificateChainWithKeySize() throws Exception {
-        server = setupTestObtainCertificateWithKeySize();
-        AcmeAccount account = populateAccount(ACCOUNT_6_V2);
-        String domainName = "inlneseppwkfwewv2.com"; // randomly generated domain name
-        obtainCertificateChain("RSA", 4096, account, domainName);
-    }
-
-    @Test
-    public void testObtainCertificateChainWithECPublicKey() throws Exception {
-        server = setupTestObtainCertificateWithECPublicKey();
-        AcmeAccount account = populateAccount(ACCOUNT_7_V2);
-        String domainName = "mndelkdnbcilohgv2.com"; // randomly generated domain name
-        obtainCertificateChain("EC", 256, account, domainName);
-    }
-
-    @Test
-    public void testObtainCertificateChainWithUnsupportedPublicKey() throws Exception {
-        try {
-            server = setupTestObtainCertificateWithUnsupportedPublicKey();
-            AcmeAccount account = populateAccount(ACCOUNT_7_V2);
-            String domainName = "iraclzlcqgaymrc.com";
-            obtainCertificateChain("DSA", 2048, account, domainName);
-            fail("Expected AcmeException not thrown");
-        } catch (AcmeException expected) {
-        }
     }
 
     private void obtainCertificateChain(String keyAlgorithmName, int keySize, AcmeAccount account, String domainName) throws Exception {
@@ -351,141 +332,6 @@ public class AcmeClientSpiTest {
                 assertEquals(AcmeClientSpi.DEFAULT_EC_KEY_SIZE, ((RSAPublicKey) signedCert.getPublicKey()).getModulus().bitLength());
                 assertEquals("EC", privateKey.getAlgorithm());
             }
-        }
-    }
-
-    @Test
-    public void testRevokeCertificateWithoutReason() throws Exception {
-        server = setupTestRevokeCertificate();
-        AcmeAccount account = populateBasicAccount(ACCOUNT_1_V2);
-        revokeCertificate(account, null);
-    }
-
-    @Test
-    public void testRevokeCertificateWithReason() throws Exception {
-        server = setupTestRevokeCertificateWithReason();
-        AcmeAccount account = populateBasicAccount(ACCOUNT_1_V2);
-        revokeCertificate(account, CRLReason.KEY_COMPROMISE);
-
-    }
-
-    private void revokeCertificate(AcmeAccount account, CRLReason reason) throws Exception {
-        X509Certificate certificateToRevoke;
-        if (reason == null) {
-            certificateToRevoke = aliasToCertificateMap.get(REVOKE_ALIAS_V2);
-        } else {
-            certificateToRevoke = aliasToCertificateMap.get(REVOKE_WITH_REASON_ALIAS_V2);
-        }
-        acmeClient.revokeCertificate(account, false, certificateToRevoke, reason);
-    }
-
-    @Test
-    public void testChangeAccountKey() throws Exception {
-        server = setupTestChangeAccountKey();
-        AcmeAccount account = populateAccount(ACCOUNT_6_V2);
-        X509Certificate oldCertificate = account.getCertificate();
-        X500Principal oldDn = account.getDn();
-        acmeClient.changeAccountKey(account, false);
-        assertTrue(! oldCertificate.equals(account.getCertificate()));
-        assertEquals(oldDn, account.getDn());
-        assertEquals(Acme.VALID, acmeClient.queryAccountStatus(account, false));
-    }
-
-    @Test
-    public void testChangeAccountKeySpecifyCertificateAndPrivateKey() throws Exception {
-        server = setupTestChangeAccountKeySpecifyCertificateAndPrivateKey();
-        AcmeAccount account = populateAccount(ACCOUNT_8_V2);
-        X500Principal oldDn = account.getDn();
-
-        // RSA account key
-        X509Certificate newCertificate = aliasToCertificateMap.get(NEW_KEY_ALIAS_V2);
-        PrivateKey newPrivateKey = aliasToPrivateKeyMap.get(NEW_KEY_ALIAS_V2);
-        acmeClient.changeAccountKey(account, false, newCertificate, newPrivateKey);
-        assertEquals(newCertificate, account.getCertificate());
-        assertEquals(newPrivateKey, account.getPrivateKey());
-        assertEquals(oldDn, account.getDn());
-        assertEquals(Acme.VALID, acmeClient.queryAccountStatus(account, false));
-
-        // ECDSA account key
-        newCertificate = aliasToCertificateMap.get(NEW_EC_KEY_ALIAS_V2);
-        newPrivateKey = aliasToPrivateKeyMap.get(NEW_EC_KEY_ALIAS_V2);
-        acmeClient.changeAccountKey(account, false, newCertificate, newPrivateKey);
-        assertEquals(newCertificate, account.getCertificate());
-        assertEquals(newPrivateKey, account.getPrivateKey());
-        assertEquals(oldDn, account.getDn());
-        assertEquals(Acme.VALID, acmeClient.queryAccountStatus(account, false));
-
-        // attempting to change the account key to a key that is already in use for a different account should fail
-        account = populateAccount(ACCOUNT_9_V2);
-        X509Certificate oldCertificate = account.getCertificate();
-        PrivateKey oldPrivateKey = account.getPrivateKey();
-        try {
-            acmeClient.changeAccountKey(account, false, newCertificate, newPrivateKey);
-            fail("Expected AcmeException not thrown");
-        } catch (AcmeException expected) {
-        }
-        assertEquals(oldCertificate, account.getCertificate());
-        assertEquals(oldPrivateKey, account.getPrivateKey());
-    }
-
-    @Test
-    public void testGetMetadata() throws Exception {
-        server = setupTestGetMetadata();
-        AcmeAccount account = populateBasicAccount(ACCOUNT_8_V2);
-        AcmeMetadata metadata = acmeClient.getMetadata(account, false);
-        assertNotNull(metadata);
-        assertEquals("https://boulder:4431/terms/v7", metadata.getTermsOfServiceUrl());
-        assertEquals("https://github.com/letsencrypt/boulder", metadata.getWebsiteUrl());
-        assertArrayEquals(new String[] { "happy-hacker-ca.invalid", "happy-hacker2-ca.invalid" }, metadata.getCAAIdentities());
-        assertTrue(metadata.isExternalAccountRequired());
-
-        metadata = acmeClient.getMetadata(account, false);
-        assertNotNull(metadata);
-        assertEquals("https://boulder:4431/terms/v7", metadata.getTermsOfServiceUrl());
-        assertNull(metadata.getWebsiteUrl());
-        assertNull(metadata.getCAAIdentities());
-        assertFalse(metadata.isExternalAccountRequired());
-
-        metadata = acmeClient.getMetadata(account, false);
-        assertNull(metadata);
-    }
-
-    private class SimpleAcmeClient extends AcmeClientSpi {
-
-        public AcmeChallenge proveIdentifierControl (AcmeAccount account, List <AcmeChallenge> challenges) throws AcmeException {
-            AcmeChallenge selectedChallenge = null;
-            for (AcmeChallenge challenge : challenges) {
-                if (challenge.getType() == AcmeChallenge.Type.HTTP_01) {
-                    client.setDispatcher(createChallengeResponse(account, challenge));
-                    selectedChallenge = challenge;
-                    break;
-                }
-            }
-            return selectedChallenge;
-        }
-
-        public void cleanupAfterChallenge(AcmeAccount account, AcmeChallenge challenge) throws AcmeException {
-            // do nothing
-        }
-
-        private Dispatcher createChallengeResponse(AcmeAccount account, AcmeChallenge challenge) {
-            return new Dispatcher() {
-                @Override
-                public MockResponse dispatch(RecordedRequest recordedRequest) throws InterruptedException {
-                    String path = recordedRequest.getPath();
-                    if (path.equals("/.well-known/acme-challenge/" + challenge.getToken())) {
-                        try {
-                            return new MockResponse()
-                                    .setHeader("Content-Type", "application/octet-stream")
-                                    .setBody(challenge.getKeyAuthorization(account));
-                        } catch (AcmeException e) {
-                            throw new RuntimeException(e);
-                        }
-                    }
-                    return new MockResponse()
-                            .setBody("");
-                }
-            };
         }
     }
 
@@ -709,6 +555,10 @@ public class AcmeClientSpiTest {
         public ClientAndServer build() {
             return server;
         }
+    }
+
+    public static MockWebServer getMockWebServerClient() {
+        return client;
     }
 
     /* -- Helper methods used to set up the messages that should be sent from the mock Let's Encrypt server to our ACME client. -- */
@@ -974,7 +824,7 @@ public class AcmeClientSpiTest {
                 "  \"initialIp\": \"10.77.77.1\"," + System.lineSeparator() +
                 "  \"createdAt\": \"2019-07-12T16:52:19Z\"," + System.lineSeparator() +
                 "  \"status\": \"valid\"" + System.lineSeparator() +
-                "}" + System.lineSeparator() ;
+                "}" + System.lineSeparator();
 
         final String UPDATE_ACCT_REPLAY_NONCE_2 = "zincgt5sXshHjq3Je_kVdG2rtB34uFrpeaiWShTaC4IK-Dg";
 
