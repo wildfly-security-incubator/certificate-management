@@ -77,6 +77,13 @@
             <version>${version.jakarta.json.jakarta-json-api}</version>
             <scope>provided</scope>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/io.smallrye.reactive/mutiny -->
+        <dependency>
+            <groupId>io.smallrye.reactive</groupId>
+            <artifactId>mutiny</artifactId>
+            <version>${version.io.smallrye.reactive.mutiny}</version>
+        </dependency>
+
 
         <!-- Mock Web Server -->
         <dependency>

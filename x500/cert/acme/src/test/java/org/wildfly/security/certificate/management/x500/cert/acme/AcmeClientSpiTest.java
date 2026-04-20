@@ -37,6 +37,10 @@ import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameter;
+import org.junit.runners.Parameterized.Parameters;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.matchers.Times;
 import org.mockserver.model.HttpRequest;
@@ -56,18 +60,15 @@ import java.security.cert.CRLReason;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.List;
 
 import javax.security.auth.x500.X500Principal;
 
 import mockit.Mock;
 import mockit.MockUp;
-import okhttp3.mockwebserver.Dispatcher;
-import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
-import okhttp3.mockwebserver.RecordedRequest;
 
 
 /**
@@ -78,6 +79,7 @@ import okhttp3.mockwebserver.RecordedRequest;
  *
  * @author <a href="mailto:fjuma@redhat.com">Farah Juma</a>
  */
+@RunWith(Parameterized.class)
 public class AcmeClientSpiTest {
 
     private static AcmeAccount.Builder populateBasicBuilder() throws Exception {
@@ -116,7 +118,13 @@ public class AcmeClientSpiTest {
     private static ClientAndServer server; // used to simulate a Let's Encrypt server instance
     private static MockWebServer client; // used to simulate a WildFly instance
 
-    private final SimpleAcmeClient acmeClient = new SimpleAcmeClient();
+    @Parameter
+    public static SimpleDelegatingAcmeClient acmeClient = null;
+
+    @Parameters
+    public static Iterable<? extends Object> data() {
+        return Arrays.asList(new SimpleDelegatingAcmeClient(false), new SimpleDelegatingAcmeClient(true));
+    }
 
     private static void mockRetryAfter() {
         Class<?> classToMock;
@@ -450,45 +458,6 @@ public class AcmeClientSpiTest {
         assertNull(metadata);
     }
 
-    private class SimpleAcmeClient extends AcmeClientSpi {
-
-        public AcmeChallenge proveIdentifierControl (AcmeAccount account, List <AcmeChallenge> challenges) throws AcmeException {
-            AcmeChallenge selectedChallenge = null;
-            for (AcmeChallenge challenge : challenges) {
-                if (challenge.getType() == AcmeChallenge.Type.HTTP_01) {
-                    client.setDispatcher(createChallengeResponse(account, challenge));
-                    selectedChallenge = challenge;
-                    break;
-                }
-            }
-            return selectedChallenge;
-        }
-
-        public void cleanupAfterChallenge(AcmeAccount account, AcmeChallenge challenge) throws AcmeException {
-            // do nothing
-        }
-
-        private Dispatcher createChallengeResponse(AcmeAccount account, AcmeChallenge challenge) {
-            return new Dispatcher() {
-                @Override
-                public MockResponse dispatch(RecordedRequest recordedRequest) throws InterruptedException {
-                    String path = recordedRequest.getPath();
-                    if (path.equals("/.well-known/acme-challenge/" + challenge.getToken())) {
-                        try {
-                            return new MockResponse()
-                                    .setHeader("Content-Type", "application/octet-stream")
-                                    .setBody(challenge.getKeyAuthorization(account));
-                        } catch (AcmeException e) {
-                            throw new RuntimeException(e);
-                        }
-                    }
-                    return new MockResponse()
-                            .setBody("");
-                }
-            };
-        }
-    }
-
     /**
      * Class used to build up a mock Let's Encrypt server instance.
      */
@@ -709,6 +678,10 @@ public class AcmeClientSpiTest {
         public ClientAndServer build() {
             return server;
         }
+    }
+
+    public static MockWebServer getMockWebServerClient() {
+        return client;
     }
 
     /* -- Helper methods used to set up the messages that should be sent from the mock Let's Encrypt server to our ACME client. -- */
@@ -974,7 +947,7 @@ public class AcmeClientSpiTest {
                 "  \"initialIp\": \"10.77.77.1\"," + System.lineSeparator() +
                 "  \"createdAt\": \"2019-07-12T16:52:19Z\"," + System.lineSeparator() +
                 "  \"status\": \"valid\"" + System.lineSeparator() +
-                "}" + System.lineSeparator() ;
+                "}" + System.lineSeparator();
 
         final String UPDATE_ACCT_REPLAY_NONCE_2 = "zincgt5sXshHjq3Je_kVdG2rtB34uFrpeaiWShTaC4IK-Dg";
 
